@@ -1,0 +1,411 @@
+# Dismantling the bulk: examining neuronal heterogeneity using single-cell techniques
+
+Sara Linker, Apuã Paquola, Roger Lasken, and Keegan Korthauer
+
+Festival of Genomics
+
+9/19/2016
+
+# Hour II: Quality control and normalization
+
+The readout from a RNA-Seq experiment is a mixture of a **biological** and **technical** sources.
+
+The goal of quality control is to capture **metrics** and evaluate the **technical quality** of each sample, and help decide which samples to keep and which to exclude from the analysis.
+
+The data from samples with enough quality still carry features that have to do with the technical processing of samples and are unrelated to the biology. 
+
+The goal of normalization is to apply a **transformation** to the data to factor out the technical component, making the samples **comparable**.
+
+We will start with quality control, evaluating a set of metrics.
+
+### Load libraries
+
+We load R libraries we will use: ggplot2 for general plotting, and scone to evaluate normalization strategies.
+
+```{r}
+library(scone)
+library(ggplot2)
+```
+
+### Load data
+
+**gene_counts** is a data frame containing unnormalized read counts per gene
+
+**ercc_counts** is a data frame containing raw read counts per ERCC spike-in 
+
+**cells** is a data frame containing metadata for each cell
+
+```{r}
+gene_counts <- read.csv("../../_m/genes_counts.csv", stringsAsFactors = FALSE, header=TRUE, row.names = 1)
+ercc <- read.csv("../../_m/ercc_counts.csv", stringsAsFactors = FALSE, header = TRUE, row.names=1)
+cells <- read.csv("../../_m/cell_metadata.csv", stringsAsFactors = FALSE, header = TRUE)
+
+whichTomato <- grep("tdTomato", rownames(ercc))
+ercc <- ercc[-whichTomato,]
+```
+
+### Examine sizes of data frames
+
+gene_counts: 24057 genes x 1679 cells
+
+ercc: 92 spike-ins x 1679 cells
+
+cells: 1679 cells x 16 metadata fields
+
+```{r}
+dim(gene_counts)
+```
+
+```{r}
+dim(ercc)
+```
+
+```{r}
+dim(cells)
+```
+
+### Examine metadata
+
+Some of the metadata fields contain information about the biological sample, some about sequencing metrics.
+
+```{r, results='asis'}
+knitr::kable(head(cells))
+```
+
+### Select fields from metadata that are useful for QC
+
+Select fields related to sequencing and mapping
+
+```{r}
+qc <- cells[,c('total_reads', 'all_mapped_percent', 'mRNA_percent', 'ercc_percent', 'tdt_permillion')]
+rownames(qc) <- cells$long_name
+```
+
+### Add two more fields to the qc dataframe: number of genes detected and number of ERCC spike-ins detected
+
+```{r}
+all.equal(cells$long_name, colnames(gene_counts)) && all.equal(cells$long_name, colnames(ercc))
+```
+
+```{r}
+qc$ercc_detected = colSums(ercc > 0)
+```
+
+```{r}
+qc$genes_detected = colSums(gene_counts > 0)
+```
+
+### Here's how the QC dataframe looks like
+
+```{r, results='asis'}
+knitr::kable(head(qc))
+```
+
+### Plot the distribution of these metrics
+
+```{r}
+options(repr.plot.width=8, repr.plot.height=8)
+```
+
+```{r}
+ggplot(cells, aes(x=total_reads)) + geom_histogram(bins=100) + ggtitle('Histogram of total_reads')
+```
+
+```{r}
+summary(qc$total_reads)
+```
+
+```{r}
+ggplot(qc, aes(x=all_mapped_percent)) + geom_histogram(bins=100)  + ggtitle('Histogram of percent mapped reads')
+```
+
+```{r}
+summary(qc$all_mapped_percent)
+```
+
+```{r}
+ggplot(qc, aes(x=mRNA_percent)) + geom_histogram(bins=100) + ggtitle('Histogram of percent reads mapped to mRNA')
+```
+
+```{r}
+summary(qc$mRNA_percent)
+```
+
+```{r}
+ggplot(qc, aes(x=ercc_percent)) + geom_histogram(bins=100) + ggtitle('Histogram of percent reads mapped to ERCC')
+```
+
+```{r}
+summary(qc$ercc_percent)
+```
+
+```{r}
+ggplot(qc, aes(x=tdt_permillion)) + geom_histogram(bins=100) + ggtitle('Histogram of reads mapped to tdtomato per million')
+```
+
+```{r}
+summary(qc$tdt_permillion)
+```
+
+```{r}
+ggplot(qc, aes(x=ercc_detected)) + geom_histogram(bins=100) + ggtitle('Histogram of number of ERCC spike-ins detected')
+```
+
+```{r}
+summary(qc$ercc_detected)
+```
+
+```{r}
+ggplot(qc, aes(x=genes_detected)) + geom_histogram(bins=100) + ggtitle('Histogram of number of genes detected')
+```
+
+```{r}
+summary(qc$genes_detected)
+```
+
+### Other metrics commonly used for QC
+
+1. GC content
+2. k-mer content
+3. 3' bias
+4. %reads mapping to mitochondria: high mitochondria/genome ratio suggests apoptotic cell
+5. %reads mapping to introns or intergenic regions
+
+### Identifying outlying samples by PCA of QC metrics
+
+We can use PCA to visualize each sample with respect to QC metrics and pick outliers.
+
+```{r}
+qc_pc_obj = prcomp(qc, center = TRUE, scale=TRUE)
+```
+
+```{r}
+#ggplot(as.data.frame(qc_pc_obj$x), aes(x=PC1, y=PC2)) + geom_point()
+```
+
+```{r}
+qc_bp_obj = biplot_colored(qc_pc_obj, y=1, expand = .8, choices=1:2)
+title('PCA of QC metrics')
+```
+
+## We don't find low quality outliers
+The samples on the top left have very high number of reads (and that is good), and this is what causes PC2 to be high.
+
+The authors of the paper had already excluded low-quality samples from this dataset.
+
+# Normalization
+
+
+The purpose of normalization is to make datasets from different cells comparable. 
+
+Normalization strategies range from simple scaling (e.g. dividing raw counts by the total number of reads), to a more complex schemes that adjust for batch effects and biological effects.
+
+Too much adjustment can cut away biological signal and/or introduce artifacts.
+
+There is no normalization strategy that is optimal for all datasets. 
+
+Many normalization strategies should be considered.
+
+
+Some common normalization strategies for RNA-Seq
+
+name | long name | notes |
+:-----|:---------|:------------------------------------------------|
+RPM | reads per million | (counts / total reads ) * 1 million |
+RPKM or FPKM | fragments per kilobase per million | takes gene aclength into account |
+TPM | transcripts per million | takes gene length into account |
+FQ | full quantile | match quantiles across samples |
+UQ | upper quartile | upper quartile of read counts define scaling factor |
+TMM | trimmed mean of M values (edgeR) | weighted log-fold-change values of a reference sample, removing genes with extreme values |
+DESeq | DESeq | scales samples to a reference sample based on the geometric mean of read counts across all samples |
+
+## Testing multiple normalization strategies with SCONE
+
+SCONE (Single-Cell Overview of Normalized Expression) supports a rational, data-driven framework for assessing the efficacy of various normalization workflows, encouraging users to explore trade-offs inherent to their data set prior to finalizing a data normalization strategy. It provides an interface for running multiple normalization workflows in parallel. It also offers tools for ranking workflows and visualizing trade-offs. It imports some common normalization modules used in traditional bulk sequencing, and provide support for integrating user-specified normalization modules.
+
+R package on github:
+
+https://github.com/YosefLab/scone
+
+
+More information and usage examples:
+
+https://niryosef.wordpress.com/tools/scone/
+
+https://www.bioconductor.org/help/course-materials/2016/BioC2016/ConcurrentWorkshops1/Risso/scone.html
+
+## How it works
+
+A normalization strategy is composed of a series of steps, each step being optional and having its specific parameters.
+SCONE tries all combinations of steps and parameters, evaluating many normalization strategies through metrics.
+
+1. imputation - replace zeroes by average values - options: imputation or no imputation
+2. scaling - scaling normalization strategy - options: none, UQ, FQ, DeSeq, . 
+3. RUVg - normalization with housekeeping genes or spike-ing - options: none, k=1, k=2, k=3 (k = number of parameters)
+4. batch adjustment - whether to adjust for batch effects - options: yes or no
+5. bio adjustment - whether to adjust for biological factors - options: yes or no
+
+
+RUV: Remove Unwanted Variation from RNA-Seq Data
+bioconductor package RUVSeq
+
+Risso D, Ngai J, Speed T and Dudoit S (2014). “Normalization of RNA-seq data using factor analysis of control genes or samples.” Nature Biotechnology, 32(9), pp. 896–902. In press, http://www.nature.com/nbt/journal/v32/n9/full/nbt.2931.html. 
+
+### Make sure column names of genes and ercc matrices are compatible
+
+```{r}
+all.equal(colnames(gene_counts), colnames(ercc))
+```
+
+### Create a combined matrix of gene and ercc counts
+
+```{r}
+gene_and_ercc_counts <- rbind(gene_counts, ercc)
+dim(gene_and_ercc_counts)
+```
+
+### Filter out genes and ERCCs with very low counts over all samples
+
+```{r}
+f_gene_and_ercc_counts <- gene_and_ercc_counts[rowSums(gene_and_ercc_counts > 0) >= 50, ]
+f_ercc <- rownames(ercc)[rownames(ercc) %in% rownames(f_gene_and_ercc_counts)]
+```
+
+### Set up biological and batch factors
+
+For **bio**, we use the dissection layer obtained from metadata.
+
+For **batch**, we use the month of sample collection, obtained from metadata.
+
+```{r}
+colection_month = gsub("([0-9]+)/[0-9]+/([0-9]+)", "\\1/\\2", cells$collection_date)
+batch <- factor(colection_month)
+bio <- factor(cells$layer_dissectoin)
+```
+
+```{r, results='asis'}
+knitr::kable(table(batch, bio))
+```
+
+### Set up a SCONE run
+
+We use (no_normalization, DESeq, TMM, UQ, FQ) as candidate scaling strategies
+We use the ERCC spike ins for RUVg
+
+```{r}
+params <- scone(expr = as.matrix(f_gene_and_ercc_counts),
+                scaling = c(none = identity, deseq = DESEQ_FN, tmm = TMM_FN, uqp = UQ_FN_POS, fq = FQT_FN),
+                ruv_negcon = f_ercc, k_ruv = 3,
+                k_qc = 0,
+                bio = bio, adjust_bio = "yes",
+                batch = batch, adjust_batch = "yes",
+                run = FALSE)
+```
+
+### Eliminate combinations of steps that are not meaningful
+We don't want to adjust for biological factor unless we also adjust for batch factors.
+
+```{r}
+is_screened = (params$adjust_biology == "bio") & (params$adjust_batch != "batch")
+params = params[!is_screened,]
+```
+
+### Here are the strategies to be tested
+
+```{r}
+params
+```
+
+### This is the call to SCONE.
+It took about 1 hour in a 16-core machine and 48G memory. We are loaded precomputed results here.
+
+```{r}
+#res <- scone(expr = as.matrix(f_gene_and_ercc_counts),
+#                scaling = c(none = identity, deseq = DESEQ_FN, tmm = TMM_FN, uqp = UQ_FN_POS, fq = FQT_FN),
+#                ruv_negcon = f_ercc, k_ruv = 3,
+#                k_qc = 0,
+#                bio = bio, adjust_bio = "yes",
+#                batch = batch, adjust_batch = "yes",
+#                run = TRUE, eval_kclust = 2:3)
+
+load('res.Rdata')
+```
+
+```{r}
+scores = res$scores[, !(colnames(res$scores) %in% c('EXP_QC_COR', 'EXP_WV_COR', 'mean_score'))]
+```
+
+```{r}
+pc_obj = prcomp(scores, center = TRUE, scale = FALSE)
+```
+
+```{r}
+bp_obj = biplot_colored(pc_obj, y = -res$scores[,'mean_score'],expand = .6)
+title('PCA of SCONE metrics')
+```
+
+## High score normalizations
+
+```{r, results='asis'}
+knitr::kable(head(res$scores))
+```
+
+```{r}
+bp_obj = biplot_colored(pc_obj, y = -res$scores[,'mean_score'],expand = .6)
+
+#points(t(bp_obj[grepl("none,deseq,no_uv,no_bio,no_batch",rownames(bp_obj)),]), pch = 1, col = "red", cex = 1.5)
+#points(t(bp_obj[grepl("none,none,no_uv,no_bio,no_batch",rownames(bp_obj)),]), pch = 1, col = "blue", cex = 1.5)
+#points(t(bp_obj[grepl("none,deseq,ruv_k=1,no_bio,no_batch",rownames(bp_obj)),]), pch = 1, col = "blue", cex = 1.5)
+
+text(bp_obj[1:5,], labels=1:5)
+
+title('PCA of SCONE metrics', sub='Top 5 normalizations are numbered')
+```
+
+```{r}
+bp_obj = biplot_colored(pc_obj, y = -res$scores[,'mean_score'],expand = .6)
+
+points(bp_obj[grepl(",bio",rownames(bp_obj)),], pch = 1, col = "red", cex = 1.5)
+
+title('PCA of SCONE metrics', sub='Normalizations with bio adjustment are highlighted')
+```
+
+```{r}
+bp_obj = biplot_colored(pc_obj, y = -res$scores[,'mean_score'],expand = .6)
+
+points(bp_obj[grepl(",batch",rownames(bp_obj)),], pch = 1, col = "red", cex = 1.5)
+
+title('PCA of SCONE metrics', sub='Normalizations with batch adjustment are highlighted')
+```
+
+### SCONE's metrics
+
+**BIO_SIL**. The average silhouette width of clusters defined by bio, defined with respect to a Euclidean distance metric over the first 3 expression PCs. Positive signature.
+
+**BATCH_SIL**. The average silhouette width of clusters defined by batch, defined with respect to a Euclidean distance metric over the first 3 expression PCs. Negative signature.
+
+**PAM_SIL**. The maximum average silhouette width of clusters defined by PAM clustering, defined with respect to a Euclidean distance metric over the first 3 expression PCs. Positive signature.
+
+**EXP_QC_COR**. Maximum squared Spearman correlation between first 3 expression PCs and first k_qc QPCs. Negative signature.
+
+**EXP_UV_COR**. Maximum squared Spearman correlation between first 3 expression PCs and first 3 PCs of the negative control (specified by eval_negcon or ruv_negcon by default) sub-matrix of the original (raw) data. Negative signature.
+
+**EXP_WV_COR**. Maximum squared Spearman correlation between first 3 expression PCs and first 3 PCs of the positive control (specified by eval_poscon) sub-matrix of the original (raw) data. Positive signature.
+
+**RLE_MED**. The mean squared median Relative Log Expression (RLE). Negative signature.
+
+**RLE_IQR**. The mean inter-quartile range (IQR) of the RLE. Negative signature.
+
+## Discussion
+
+It seems like simple normalization strategies like DESeq, and quantile normalization perform better in this dataset.
+
+One possibility is that DESeq's assumption that most genes are not DE across samples is valid. This "internal normalization" migh be better for this dataset than ERCC spike-ins. A median of 27 (out of 93) ERCC spike-ins are detected per cell. Non-DE genes provide a bigger set of genes for normalization.
+
+Adjustment for biological and batch factors did not perform well. These asjustments were also based on ERCC. Using another set of housekeeping genes might improve the performance.
+
+It is important to compare many normalization strategies.
+
+```{r}
+sessionInfo()
+```
